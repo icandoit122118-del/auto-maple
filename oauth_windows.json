@@ -1,0 +1,15 @@
+{
+  "ts": 1793100549.4306905,
+  "captured": [
+    {
+      "hwnd": 264376,
+      "size": "1024x720",
+      "title": "Nexon Global Launcher"
+    },
+    {
+      "hwnd": 788618,
+      "size": "800x300",
+      "title": "NexonLauncher"
+    }
+  ]
+}

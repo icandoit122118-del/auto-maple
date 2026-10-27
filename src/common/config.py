@@ -22,6 +22,12 @@ stage_fright = False
 # Represents the current shortest path that the bot is taking
 path = []
 
+# Background / focus input mode for DirectInput8 (DISCL_FOREGROUND):
+# - 'auto_focus': Automatically brings MapleStory to focus via Win11 SwitchToThisWindow unlock when bot is enabled (Method 3A)
+# - 'focus_restore': Switches focus to MapleStory during key press and restores previous foreground window on key release (Method 3B)
+# - 'postmessage_only': Sends PostMessageW without stealing focus (works inside Method 1 Hyper-V VM / Method 2 RDP session where MapleStory stays focused)
+bg_input_mode = 'auto_focus'
+
 
 #############################
 #       Shared Modules      #

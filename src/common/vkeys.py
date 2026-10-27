@@ -1,10 +1,10 @@
-"""A module for simulating low-level keyboard and mouse key presses."""
+"""A module for simulating low-level keyboard and mouse key presses (PostMessageW + Win11 Focus Control + SendInput)."""
 
 import ctypes
 import time
 import win32con
 import win32api
-from src.common import utils
+from src.common import config, utils
 from ctypes import wintypes
 from random import random
 
@@ -20,7 +20,22 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
 
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
+MK_LBUTTON = 0x0001
+MK_RBUTTON = 0x0002
+
 MAPVK_VK_TO_VSC = 0
+VK_MENU = 0x12
+
+EXTENDED_KEYS = {
+    'left', 'up', 'right', 'down',
+    'insert', 'delete', 'home', 'end', 'page up', 'page down'
+}
 
 # https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes?redirectedfrom=MSDN
 KEY_MAP = {
@@ -170,6 +185,73 @@ def err_check(result, _, args):
 user32.SendInput.errcheck = err_check
 user32.SendInput.argtypes = (wintypes.UINT, LPINPUT, ctypes.c_int)
 
+_saved_prev_hwnd = 0
+
+
+def _get_target_hwnd():
+    if config.capture is not None and getattr(config.capture, 'handle', 0):
+        return config.capture.handle
+    return user32.FindWindowW('MapleStoryClass', None) or user32.FindWindowW(None, 'MapleStory')
+
+
+def _force_activate_window(hwnd):
+    """Unlocks Windows 11 ForegroundLockTimeout and brings HWND to the active foreground."""
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+    if user32.IsIconic(hwnd):
+        user32.PostMessageW(hwnd, 0x0112, 0xF120, 0)  # WM_SYSCOMMAND, SC_RESTORE
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        time.sleep(0.02)
+    fg = user32.GetForegroundWindow()
+    if fg == hwnd:
+        return True
+    user32.keybd_event(VK_MENU, 0, 0, 0)
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SwitchToThisWindow(hwnd, True)
+    finally:
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+    for _ in range(10):
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        time.sleep(0.005)
+    return user32.GetForegroundWindow() == hwnd
+
+
+def _ensure_foreground(hwnd):
+    """Acquires foreground focus on MapleStory according to config.bg_input_mode."""
+    global _saved_prev_hwnd
+    mode = getattr(config, 'bg_input_mode', 'auto_focus')
+    if mode == 'postmessage_only':
+        return user32.GetForegroundWindow() == hwnd
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+    fg = user32.GetForegroundWindow()
+    if fg != hwnd and fg != 0:
+        _saved_prev_hwnd = fg
+    return _force_activate_window(hwnd)
+
+
+def _restore_previous_foreground(target_hwnd):
+    """Restores focus to the previous window when config.bg_input_mode == 'focus_restore'."""
+    global _saved_prev_hwnd
+    mode = getattr(config, 'bg_input_mode', 'auto_focus')
+    if mode == 'focus_restore' and _saved_prev_hwnd and _saved_prev_hwnd != target_hwnd:
+        if user32.IsWindow(_saved_prev_hwnd):
+            _force_activate_window(_saved_prev_hwnd)
+        _saved_prev_hwnd = 0
+
+
+def _build_key_lparam(key, vk, is_up=False):
+    scan = user32.MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, 0)
+    lparam = 1 | (scan << 16)
+    if key in EXTENDED_KEYS:
+        lparam |= (1 << 24)
+    if is_up:
+        lparam |= (1 << 30) | (1 << 31)
+    return lparam
+
 
 #################################
 #           Functions           #
@@ -177,7 +259,8 @@ user32.SendInput.argtypes = (wintypes.UINT, LPINPUT, ctypes.c_int)
 @utils.run_if_enabled
 def key_down(key):
     """
-    Simulates a key-down action. Can be cancelled by Bot.toggle_enabled.
+    Simulates a key-down action via PostMessageW and hardware-scancode SendInput.
+    Can be cancelled by Bot.toggle_enabled.
     :param key:     The key to press.
     :return:        None
     """
@@ -186,13 +269,21 @@ def key_down(key):
     if key not in KEY_MAP.keys():
         print(f"Invalid keyboard input: '{key}'.")
     else:
-        x = Input(type=INPUT_KEYBOARD, ki=KeyboardInput(wVk=KEY_MAP[key]))
-        user32.SendInput(1, ctypes.byref(x), ctypes.sizeof(x))
+        vk = KEY_MAP[key]
+        hwnd = _get_target_hwnd()
+        if hwnd:
+            user32.PostMessageW(hwnd, WM_KEYDOWN, vk, _build_key_lparam(key, vk, is_up=False))
+            _ensure_foreground(hwnd)
+        if not hwnd or user32.GetForegroundWindow() == hwnd:
+            flags = KEYEVENTF_EXTENDEDKEY if key in EXTENDED_KEYS else 0
+            x = Input(type=INPUT_KEYBOARD, ki=KeyboardInput(wVk=vk, dwFlags=flags))
+            user32.SendInput(1, ctypes.byref(x), ctypes.sizeof(x))
 
 
 def key_up(key):
     """
-    Simulates a key-up action. Cannot be cancelled by Bot.toggle_enabled.
+    Simulates a key-up action via PostMessageW and hardware-scancode SendInput.
+    Cannot be cancelled by Bot.toggle_enabled.
     This is to ensure no keys are left in the 'down' state when the program pauses.
     :param key:     The key to press.
     :return:        None
@@ -202,8 +293,16 @@ def key_up(key):
     if key not in KEY_MAP.keys():
         print(f"Invalid keyboard input: '{key}'.")
     else:
-        x = Input(type=INPUT_KEYBOARD, ki=KeyboardInput(wVk=KEY_MAP[key], dwFlags=KEYEVENTF_KEYUP))
-        user32.SendInput(1, ctypes.byref(x), ctypes.sizeof(x))
+        vk = KEY_MAP[key]
+        hwnd = _get_target_hwnd()
+        if hwnd:
+            user32.PostMessageW(hwnd, WM_KEYUP, vk, _build_key_lparam(key, vk, is_up=True))
+        if not hwnd or user32.GetForegroundWindow() == hwnd:
+            flags = KEYEVENTF_KEYUP | (KEYEVENTF_EXTENDEDKEY if key in EXTENDED_KEYS else 0)
+            x = Input(type=INPUT_KEYBOARD, ki=KeyboardInput(wVk=vk, dwFlags=flags))
+            user32.SendInput(1, ctypes.byref(x), ctypes.sizeof(x))
+        if hwnd:
+            _restore_previous_foreground(hwnd)
 
 
 @utils.run_if_enabled
@@ -227,7 +326,7 @@ def press(key, n, down_time=0.05, up_time=0.1):
 @utils.run_if_enabled
 def click(position, button='left'):
     """
-    Simulate a mouse click with BUTTON at POSITION.
+    Simulate a mouse click with BUTTON at POSITION via PostMessageW (and mouse_event if active).
     :param position:    The (x, y) position at which to click.
     :param button:      Either the left or right mouse button.
     :return:            None
@@ -236,12 +335,27 @@ def click(position, button='left'):
     if button not in ['left', 'right']:
         print(f"'{button}' is not a valid mouse button.")
     else:
-        if button == 'left':
-            down_event = win32con.MOUSEEVENTF_LEFTDOWN
-            up_event = win32con.MOUSEEVENTF_LEFTUP
-        else:
-            down_event = win32con.MOUSEEVENTF_RIGHTDOWN
-            up_event = win32con.MOUSEEVENTF_RIGHTUP
-        win32api.SetCursorPos(position)
-        win32api.mouse_event(down_event, position[0], position[1], 0, 0)
-        win32api.mouse_event(up_event, position[0], position[1], 0, 0)
+        hwnd = _get_target_hwnd()
+        if hwnd:
+            pt = wintypes.POINT(int(position[0]), int(position[1]))
+            user32.ScreenToClient(hwnd, ctypes.byref(pt))
+            lparam = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
+            if button == 'left':
+                user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+                user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+            else:
+                user32.PostMessageW(hwnd, WM_RBUTTONDOWN, MK_RBUTTON, lparam)
+                user32.PostMessageW(hwnd, WM_RBUTTONUP, 0, lparam)
+            _ensure_foreground(hwnd)
+        if not hwnd or user32.GetForegroundWindow() == hwnd:
+            if button == 'left':
+                down_event = win32con.MOUSEEVENTF_LEFTDOWN
+                up_event = win32con.MOUSEEVENTF_LEFTUP
+            else:
+                down_event = win32con.MOUSEEVENTF_RIGHTDOWN
+                up_event = win32con.MOUSEEVENTF_RIGHTUP
+            win32api.SetCursorPos(position)
+            win32api.mouse_event(down_event, position[0], position[1], 0, 0)
+            win32api.mouse_event(up_event, position[0], position[1], 0, 0)
+        if hwnd:
+            _restore_previous_foreground(hwnd)

@@ -7,6 +7,7 @@ import cv2
 import inspect
 import importlib
 import traceback
+import os
 from os.path import splitext, basename
 from src.common import config, utils
 from src.detection import detection
@@ -73,7 +74,10 @@ class Bot(Configurable):
 
         print('\n[~] Initializing detection algorithm:\n')
         model = detection.load_model()
-        print('\n[~] Initialized detection algorithm')
+        if model is not None:
+            print('\n[~] Initialized detection algorithm')
+        else:
+            print('\n[!] Detection algorithm unavailable (missing model weights)')
 
         self.ready = True
         config.listener.enabled = True
@@ -96,7 +100,7 @@ class Bot(Configurable):
 
                 # Execute next Point in the routine
                 element = config.routine[config.routine.index]
-                if self.rune_active and isinstance(element, Point) \
+                if self.rune_active and model is not None and isinstance(element, Point) \
                         and element.location == self.rune_closest_pos:
                     self._solve_rune(model)
                 element.execute()
@@ -247,23 +251,18 @@ class Bot(Configurable):
                     url = lines[i + 2].split('=')[1].strip()
                     self.submodules.append(path)
                     try:
-                        repo.git.clone(url, path)       # First time loading submodule
-                        print(f" -  Initialized submodule '{path}'")
-                    except git.exc.GitCommandError:
-                        sub_repo = git.Repo(path)
-                        if not force:
-                            sub_repo.git.stash()        # Save modified content
-                        sub_repo.git.fetch('origin', 'main')
-                        sub_repo.git.reset('--hard', 'FETCH_HEAD')
-                        if not force:
-                            try:                # Restore modified content
-                                sub_repo.git.checkout('stash', '--', '.')
-                                print(f" -  Updated submodule '{path}', restored local changes")
-                            except git.exc.GitCommandError:
-                                print(f" -  Updated submodule '{path}'")
-                        else:
+                        if not os.path.exists(os.path.join(path, '.git')):
+                            repo.git.clone(url, path)       # First time loading submodule
+                            print(f" -  Initialized submodule '{path}'")
+                        elif force:
+                            sub_repo = git.Repo(path)
+                            sub_repo.git.fetch('origin', 'main')
+                            sub_repo.git.reset('--hard', 'FETCH_HEAD')
                             print(f" -  Rebuilt submodule '{path}'")
-                        sub_repo.git.stash('clear')
+                        else:
+                            print(f" -  Verified local submodule '{path}' (preserving local command books & routines)")
+                    except Exception as exc:
+                        print(f" -  Skipped remote sync for '{path}' ({exc})")
                     i += 3
                 else:
                     i += 1

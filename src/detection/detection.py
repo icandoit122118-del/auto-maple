@@ -1,7 +1,6 @@
 """A module for classifying directional arrows using TensorFlow."""
 
 import cv2
-import tensorflow as tf
 import numpy as np
 from src.common import utils
 
@@ -12,11 +11,21 @@ from src.common import utils
 def load_model():
     """
     Loads the saved model's weights into an Tensorflow model.
-    :return:    The Tensorflow model object.
+    :return:    The Tensorflow model object, or None if model weights are missing.
     """
 
+    import os
     model_dir = f'assets/models/rune_model_rnn_filtered_cannied/saved_model'
-    return tf.saved_model.load(model_dir)
+    weights_file = os.path.join(model_dir, 'variables', 'variables.data-00000-of-00001')
+    if not os.path.isfile(weights_file):
+        print(f'[!] Missing rune model weights ({weights_file}). Rune solving will be disabled.')
+        return None
+    try:
+        import tensorflow as tf
+        return tf.saved_model.load(model_dir)
+    except Exception as e:
+        print(f'[!] Could not load TensorFlow rune model ({e}). Rune solving will be disabled.')
+        return None
 
 
 def canny(image):

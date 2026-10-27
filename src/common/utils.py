@@ -81,7 +81,7 @@ def single_match(frame, template):
     """
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF)
+    result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
     _, _, _, top_left = cv2.minMaxLoc(result)
     w, h = template.shape[::-1]
     bottom_right = (top_left[0] + w, top_left[1] + h)
